@@ -1648,6 +1648,7 @@ lib_mod_connect(struct vnc *v)
     int error;
     int i;
     int check_sec_result;
+    int size_sectypes = 0;
 
     v->server_msg(v, "VNC started connecting", 0);
     check_sec_result = 1;
@@ -1711,24 +1712,82 @@ lib_mod_connect(struct vnc *v)
         if (error == 0)
         {
             s->p = s->data;
-            out_uint8a(s, "RFB 003.003\n", 12);
+            out_uint8a(s, "RFB 003.889\n", 12);
             s_mark_end(s);
             error = trans_force_write_s(v->trans, s);
         }
 
+        // horrible hack ignoring the version number
+
         /* sec type */
+        // if (error == 0)
+        // {
+        //     init_stream(s, 8192);
+        //     error = trans_force_read_s(v->trans, s, 4);
+        // }
+
         if (error == 0)
         {
             init_stream(s, 8192);
-            error = trans_force_read_s(v->trans, s, 4);
+            error = trans_force_read_s(v->trans, s, 1);
         }
 
         if (error == 0)
         {
-            in_uint32_be(s, i);
+            in_uint8(s, size_sectypes);
+            g_sprintf(text, "VNC num sectypes %d", size_sectypes);
+            v->server_msg(v, text, 0);
+            LOG(LOG_LEVEL_DEBUG, "got sectype count %d", size_sectypes);
+
+            if (size_sectypes < 1)
+            {
+                v->server_msg(v, "VNC error - no security types sent", 0);
+                error = 1;
+            }
+            else
+            {
+                init_stream(s, 8192);
+                error = trans_force_read_s(v->trans, s, size_sectypes);
+            }
+        }
+        else
+        {
+            LOG(LOG_LEVEL_ERROR, "could not read count of sectypes");
+            error = 1;
+        }
+
+        if (error == 0)
+        {
+            uint8_t sec_types[size_sectypes];
+            in_uint8a(s, sec_types, size_sectypes);
+
+            i = sec_types[0]; // lol hardcoded to use first type, hopefully 30
+
             g_sprintf(text, "VNC security level is %d (1 = none, 2 = standard)", i);
             v->server_msg(v, text, 0);
+            LOG(LOG_LEVEL_INFO, "got sectype %d", i);
 
+            if (i == 30)
+            {
+                init_stream(s, 8192);
+                out_uint8(s, i);
+                s_mark_end(s);
+                error = trans_force_write_s(v->trans, s); // send selected auth
+            }
+            else
+            {
+                LOG(LOG_LEVEL_ERROR, "temporarily not handling authtype %d", i);
+                error = 1; // fix when we actually handle auth types
+            }
+        }
+        else
+        {
+            LOG(LOG_LEVEL_ERROR, "could not read sectypes");
+            error = 1;
+        }
+
+        if (error == 0)
+        {
             if (i == 1) /* none */
             {
                 check_sec_result = 0;
@@ -1755,6 +1814,104 @@ lib_mod_connect(struct vnc *v)
                     s_mark_end(s);
                     error = trans_force_write_s(v->trans, s);
                     check_sec_result = 1; // not needed
+                }
+            }
+            else if (i == 30) /* diffie hellman */
+            {
+                int keylen;
+                char generator[2];
+                char* modulus;
+                char* serverkey;
+                char secret[512];
+
+                g_random(secret, 512);
+
+                init_stream(s, 8192);
+                error = trans_force_read_s(v->trans, s, 4);
+                if (error == 0) 
+                {
+                    in_uint8a(s, generator, 2);
+                    in_uint16_be(s, keylen);
+                    LOG(LOG_LEVEL_DEBUG, "got keylen %d", keylen);
+
+                    init_stream(s, 8192);
+                    error = trans_force_read_s(v->trans, s, keylen);
+                }
+                else
+                {
+                    LOG(LOG_LEVEL_ERROR, "could not read generator and keylen");
+                    error = 1;
+                }
+
+                if (error == 0)
+                {
+                    modulus = (char *)g_malloc(keylen, 0);
+                    g_memcpy(modulus, s->data, keylen);
+                    LOG(LOG_LEVEL_DEBUG, "got modulus len %d", keylen);
+
+                    init_stream(s, 8192);
+                    error = trans_force_read_s(v->trans, s, keylen);
+                }
+                else
+                {
+                    LOG(LOG_LEVEL_ERROR, "could not read modulus");
+                    error = 1;
+                }
+
+                if (error == 0)
+                {
+                    serverkey = (char *)g_malloc(keylen, 0);
+                    g_memcpy(serverkey, s->data, keylen);
+                    LOG(LOG_LEVEL_DEBUG, "got server key len %d", keylen);
+
+                    ssl_reverse_it(generator, 2);
+                    ssl_reverse_it(modulus, keylen);
+                    ssl_reverse_it(secret, 512);
+                    ssl_reverse_it(serverkey, keylen);
+
+                    char* generated = (char *)g_malloc(keylen, 0);
+                    ssl_mod_exp(generated, keylen, generator, 2, modulus, keylen, secret, 512);
+                    LOG(LOG_LEVEL_DEBUG, "calculated generated secret key");
+                    ssl_reverse_it(generated, keylen);
+
+                    char* shared = (char *)g_malloc(keylen, 0);
+                    ssl_mod_exp(shared, keylen, serverkey, keylen, modulus, keylen, secret, 512);
+                    LOG(LOG_LEVEL_DEBUG, "calculated shared secret key");
+                    ssl_reverse_it(shared, keylen);
+
+                    char hash[16];
+                    void *md5 = ssl_md5_info_create();
+                    ssl_md5_clear(md5);
+                    ssl_md5_transform(md5, shared, keylen);
+                    ssl_md5_complete(md5, hash);
+                    LOG(LOG_LEVEL_DEBUG, "calculated aes key");
+
+                    typedef struct userstruct
+                    {
+                        char username[64];
+                        char password[64];
+                    } userstruct;
+
+                    userstruct *user = (userstruct *) g_malloc(sizeof(userstruct), 1);
+                    g_strncpy(user->username, v->username, 64);
+                    g_strncpy(user->password, v->password, 64);
+                    LOG(LOG_LEVEL_DEBUG, "copied username/password to struct");
+
+                    char encrypted[sizeof(userstruct)];
+                    ssl_aes_ecb_encrypt(hash, 16, sizeof(userstruct), (char *)user, encrypted);
+                    LOG(LOG_LEVEL_DEBUG, "encrypted secret");
+
+                    init_stream(s, 8192);
+                    out_uint8a(s, encrypted, sizeof(userstruct));
+                    out_uint8a(s, generated, keylen);
+                    s_mark_end(s);
+                    error = trans_force_write_s(v->trans, s); // auth
+                    check_sec_result = 1;
+                }
+                else
+                {
+                    LOG(LOG_LEVEL_ERROR, "could not read serverkey");
+                    error = 1;
                 }
             }
             else if (i == 0)

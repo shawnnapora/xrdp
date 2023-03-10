@@ -28,6 +28,7 @@
 #include <openssl/err.h>
 #include <openssl/rc4.h>
 #include <openssl/md5.h>
+#include <openssl/aes.h>
 #include <openssl/sha.h>
 #include <openssl/hmac.h>
 #include <openssl/bn.h>
@@ -450,6 +451,39 @@ ssl_md5_complete(void *md5_info, char *data)
 #endif
 }
 
+int
+ssl_aes_ecb_encrypt(char *aes_key, int keylength, int length, const char *in_data, char *out_data)
+{
+
+    const tui8 *lin_data;
+    tui8 *lout_data;
+    if (keylength != 16)
+    {
+        return 1;
+    }
+
+    if (length % 16 != 0)
+    {
+        return 2;
+    }
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+    AES_KEY key;
+    AES_set_encrypt_key((unsigned char *)aes_key, keylength * 8, &key);
+
+    for (int i = 0; i < length; i += 16)
+    {
+        lin_data = (const tui8 *) in_data + i;
+        lout_data = (tui8 *) out_data + i;
+
+        AES_ecb_encrypt(lin_data, lout_data, &key, AES_ENCRYPT);
+    }
+#pragma GCC diagnostic pop
+
+    return 0;
+}
+
 /* FIPS stuff */
 
 /*****************************************************************************/
@@ -682,7 +716,7 @@ ssl_hmac_complete(void *hmac, char *data, int len)
 }
 
 /*****************************************************************************/
-static void
+void
 ssl_reverse_it(char *p, int len)
 {
     int i;

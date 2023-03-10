@@ -58,6 +58,10 @@ void
 ssl_md5_transform(void *md5_info, const char *data, int len);
 void
 ssl_md5_complete(void *md5_info, char *data);
+int
+ssl_aes_ecb_encrypt(char *aes_key, int keylength, int length, const char *in_data, char *out_data);
+void
+ssl_reverse_it(char *p, int len);
 void *
 ssl_des3_encrypt_info_create(const char *key, const char *ivec);
 void *
