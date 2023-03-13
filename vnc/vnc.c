@@ -1744,6 +1744,13 @@ lib_mod_connect(struct vnc *v)
                 v->server_msg(v, "VNC error - no security types sent", 0);
                 error = 1;
             }
+            else if (size_sectypes > 255)
+            {
+                // this is extra paranoid, but if we change the read or type this will save us from
+                // a buffer overflow.
+                LOG(LOG_LEVEL_ERROR, "got invalid sectype count %d", size_sectypes);
+                error = 2;
+            }
             else
             {
                 init_stream(s, 8192);
@@ -1834,8 +1841,16 @@ lib_mod_connect(struct vnc *v)
                     in_uint16_be(s, keylen);
                     LOG(LOG_LEVEL_DEBUG, "got keylen %d", keylen);
 
-                    init_stream(s, 8192);
-                    error = trans_force_read_s(v->trans, s, keylen);
+                    if (keylen > 8192)
+                    {
+                        LOG(LOG_LEVEL_ERROR, "server keylen %d too large", keylen);
+                        error = 1
+                    }
+                    else
+                    {
+                        init_stream(s, 8192);
+                        error = trans_force_read_s(v->trans, s, keylen);
+                    }
                 }
                 else
                 {
