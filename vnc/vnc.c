@@ -1844,7 +1844,7 @@ lib_mod_connect(struct vnc *v)
                     if (keylen > 8192)
                     {
                         LOG(LOG_LEVEL_ERROR, "server keylen %d too large", keylen);
-                        error = 1
+                        error = 1;
                     }
                     else
                     {
